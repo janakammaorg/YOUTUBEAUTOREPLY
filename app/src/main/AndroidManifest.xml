@@ -1,16 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.januprime.autoreply">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <application
         android:allowBackup="true"
         android:label="JanuPrime AutoReply"
         android:supportsRtl="true"
-        android:theme="@style/Theme.AppCompat.Light.NoActionBar">
+        android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
 
-        <!-- ఆటో-రిప్లై కోసం నోటిఫికేషన్స్ చదివే సర్వీస్ -->
         <service
-            android:name=".NotificationService"
+            android:name="com.januprime.autoreply.NotificationService"
             android:label="JanuPrime AutoReply Service"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
             android:exported="true">
@@ -19,9 +17,8 @@
             </intent-filter>
         </service>
 
-        <!-- యాప్ ఓపెన్ చేయడానికి మెయిన్ స్క్రీన్ -->
         <activity
-            android:name=".MainActivity"
+            android:name="com.januprime.autoreply.MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
