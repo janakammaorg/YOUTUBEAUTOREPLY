@@ -1,26 +1,16 @@
-plugins {
-    id 'com.android.application'
-}
-
-android {
-    namespace 'com.januprime.autoreply'
-    compileSdk 34
-
-    defaultConfig {
-        applicationId "com.januprime.autoreply"
-        minSdk 24
-        targetSdk 34
-        versionCode 1
-        versionName "1.0"
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
     }
-
-    buildTypes {
-        release {
-            minifyEnabled false
-        }
+    dependencies {
+        classpath "com.android.tools.build:gradle:8.1.0"
     }
 }
 
-dependencies {
-    // ఇక్కడే మనకు కావాల్సిన లైబ్రరీస్ యాడ్ చేస్తాం
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
 }
