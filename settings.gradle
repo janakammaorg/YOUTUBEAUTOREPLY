@@ -1,0 +1,2 @@
+rootProject.name = "YouTubeAutoReply"
+include ':app'
