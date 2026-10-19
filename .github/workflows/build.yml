@@ -37,7 +37,7 @@ jobs:
           }
           EOF
           
-          # BUILD.GRADLE (Added CameraX APIs for Background Recording)
+          # BUILD.GRADLE (Added lifecycle-service library to fix Context error)
           cat << 'EOF' > app/build.gradle
           plugins { id 'com.android.application' }
           android {
@@ -59,16 +59,17 @@ jobs:
               implementation 'androidx.appcompat:appcompat:1.6.1'
               implementation 'androidx.core:core:1.9.0'
               
-              // CameraX dependencies for background recording
+              // CameraX & Lifecycle dependencies
               def camerax_version = "1.3.1"
               implementation "androidx.camera:camera-core:${camerax_version}"
               implementation "androidx.camera:camera-camera2:${camerax_version}"
               implementation "androidx.camera:camera-lifecycle:${camerax_version}"
               implementation "androidx.camera:camera-video:${camerax_version}"
+              implementation 'androidx.lifecycle:lifecycle-service:2.6.2'
           }
           EOF
 
-          # THEMES (Transparent Theme)
+          # THEMES
           cat << 'EOF' > app/src/main/res/values/styles.xml
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
@@ -123,7 +124,6 @@ jobs:
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
               
-              <!-- Required for Camera API -->
               <uses-feature android:name="android.hardware.camera" />
               
               <application 
@@ -147,7 +147,7 @@ jobs:
           </manifest>
           EOF
 
-          # MAIN ACTIVITY LAYOUT (First time UI with Circle Button)
+          # MAIN ACTIVITY LAYOUT
           cat << 'EOF' > app/src/main/res/layout/activity_main.xml
           <?xml version="1.0" encoding="utf-8"?>
           <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -176,7 +176,7 @@ jobs:
           </RelativeLayout>
           EOF
           
-          # RECORDING SERVICE (CameraX Real Implementation)
+          # RECORDING SERVICE (Fixed Context issues)
           cat << 'EOF' > app/src/main/java/com/prime/app/RecordingService.java
           package com.prime.app;
 
@@ -234,7 +234,7 @@ jobs:
               }
 
               private void startCameraX() {
-                  ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this);
+                  ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(getApplicationContext());
                   cameraProviderFuture.addListener(() -> {
                       try {
                           cameraProvider = cameraProviderFuture.get();
@@ -242,10 +242,8 @@ jobs:
                           VideoCapture<Recorder> videoCapture = VideoCapture.withOutput(recorder);
                           
                           cameraProvider.unbindAll();
-                          // Using Back Camera automatically
-                          cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, videoCapture);
+                          cameraProvider.bindToLifecycle(RecordingService.this, CameraSelector.DEFAULT_BACK_CAMERA, videoCapture);
                           
-                          // Save directly to Gallery (Movies folder)
                           ContentValues contentValues = new ContentValues();
                           contentValues.put(MediaStore.MediaColumns.DISPLAY_NAME, "PRIME_" + System.currentTimeMillis());
                           contentValues.put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4");
@@ -253,21 +251,21 @@ jobs:
                           MediaStoreOutputOptions options = new MediaStoreOutputOptions.Builder(getContentResolver(), MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
                                   .setContentValues(contentValues).build();
                                   
-                          activeRecording = videoCapture.getOutput().prepareRecording(this, options)
+                          activeRecording = videoCapture.getOutput().prepareRecording(getApplicationContext(), options)
                                   .withAudioEnabled()
-                                  .start(ContextCompat.getMainExecutor(this), event -> {
+                                  .start(ContextCompat.getMainExecutor(getApplicationContext()), event -> {
                                       if (event instanceof VideoRecordEvent.Finalize) {
-                                          Toast.makeText(this, "Video Saved to Gallery!", Toast.LENGTH_LONG).show();
+                                          Toast.makeText(getApplicationContext(), "Video Saved to Gallery!", Toast.LENGTH_LONG).show();
                                       }
                                   });
                                   
                           isRecording = true;
-                          Toast.makeText(this, "Recording Started...", Toast.LENGTH_SHORT).show();
+                          Toast.makeText(getApplicationContext(), "Recording Started...", Toast.LENGTH_SHORT).show();
                       } catch (Exception e) {
                           e.printStackTrace();
-                          Toast.makeText(this, "Camera Error", Toast.LENGTH_SHORT).show();
+                          Toast.makeText(getApplicationContext(), "Camera Error", Toast.LENGTH_SHORT).show();
                       }
-                  }, ContextCompat.getMainExecutor(this));
+                  }, ContextCompat.getMainExecutor(getApplicationContext()));
               }
 
               private void stopRecording() {
@@ -285,7 +283,7 @@ jobs:
           }
           EOF
 
-          # MAIN ACTIVITY (Toggle Logic)
+          # MAIN ACTIVITY 
           cat << 'EOF' > app/src/main/java/com/prime/app/MainActivity.java
           package com.prime.app;
           
@@ -312,13 +310,11 @@ jobs:
                   boolean isFirstTime = prefs.getBoolean("isFirstTime", true);
 
                   if (!isFirstTime && hasPermissions()) {
-                      // NOT First Time: Act as a hidden switch. Open, Toggle, Close immediately.
                       toggleRecording();
                       finish(); 
                       return;
                   }
                   
-                  // FIRST TIME ONLY: Show UI Setup
                   setTheme(R.style.Theme_App);
                   setContentView(R.layout.activity_main);
                   
@@ -358,7 +354,7 @@ jobs:
                   Intent serviceIntent = new Intent(this, RecordingService.class);
                   if (RecordingService.isRecording) {
                       serviceIntent.setAction("STOP");
-                      startService(serviceIntent); // Send stop command
+                      startService(serviceIntent); 
                   } else {
                       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                           startForegroundService(serviceIntent);
