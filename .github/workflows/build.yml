@@ -1,32 +1,259 @@
-name: Build Android APK
+name: Build PRIME Offline APK
 
 on:
-  push:
-    branches: [ "main" ]
-  workflow_dispatch:
+  workflow_dispatch: 
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
 
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
+      - name: Create Android App Code
+        run: |
+          mkdir -p app/src/main/java/com/prime/app
+          mkdir -p app/src/main/res/xml
+          mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/drawable
+          mkdir -p app/src/main/res/layout
+          
+          echo "include ':app'" > settings.gradle
+          
+          cat << 'EOF' > gradle.properties
+          android.useAndroidX=true
+          android.enableJetifier=true
+          EOF
+          
+          cat << 'EOF' > build.gradle
+          buildscript {
+              repositories { google(); mavenCentral() }
+              dependencies { classpath "com.android.tools.build:gradle:8.4.2" }
+          }
+          allprojects {
+              repositories { google(); mavenCentral() }
+          }
+          EOF
+          
+          cat << 'EOF' > app/build.gradle
+          plugins { id 'com.android.application' }
+          android {
+              namespace 'com.prime.app'
+              compileSdk 34
+              defaultConfig {
+                  applicationId "com.prime.app"
+                  minSdk 22
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'androidx.core:core:1.9.0'
+          }
+          EOF
 
-    - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+          # APP ICON (Using default android icon as placeholder, you can replace later)
+          wget -O app/src/main/res/drawable/app_icon.png "https://res.cloudinary.com/ixxjuj5g/image/upload/v1790382703/20260926_003238.jpg"
 
-    - name: Build with Gradle
-      run: gradle assembleDebug
+          # FILE PROVIDER
+          cat << 'EOF' > app/src/main/res/xml/file_paths.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <paths>
+              <cache-path name="shared_media" path="media/"/>
+              <external-path name="external_files" path="."/>
+          </paths>
+          EOF
+          
+          # THEME (Black Theme for stealth)
+          cat << 'EOF' > app/src/main/res/values/styles.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.App" parent="Theme.AppCompat.Light.NoActionBar">
+                  <item name="android:windowBackground">@android:color/black</item>
+                  <item name="android:statusBarColor">#000000</item>
+                  <item name="android:navigationBarColor">#000000</item>
+              </style>
+          </resources>
+          EOF
+          
+          # MANIFEST (Added Camera, Mic, Storage, Foreground Service permissions. Removed Internet)
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              
+              <uses-permission android:name="android.permission.CAMERA" />
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.WAKE_LOCK" />
+              
+              <application 
+                  android:label="Prime" 
+                  android:icon="@drawable/app_icon" 
+                  android:theme="@style/Theme.App" 
+                  android:requestLegacyExternalStorage="true" 
+                  android:hardwareAccelerated="true">
+                  
+                  <activity android:name=".MainActivity" android:exported="true" android:configChanges="orientation|keyboardHidden|screenSize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  
+                  <provider
+                      android:name="androidx.core.content.FileProvider"
+                      android:authorities="com.prime.app.fileprovider"
+                      android:exported="false"
+                      android:grantUriPermissions="true">
+                      <meta-data
+                          android:name="android.support.FILE_PROVIDER_PATHS"
+                          android:resource="@xml/file_paths" />
+                  </provider>
 
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: YouTubeAutoReply-APK
-        path: app/build/outputs/apk/debug/*.apk
+              </application>
+          </manifest>
+          EOF
+
+          # MAIN ACTIVITY LAYOUT (XML) - Pure Black Screen with a hidden start/stop area
+          cat << 'EOF' > app/src/main/res/layout/activity_main.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:background="#000000"
+              android:id="@+id/main_container">
+              
+              <!-- Hidden view to keep camera preview active if needed later -->
+              <SurfaceView
+                  android:id="@+id/hidden_surface"
+                  android:layout_width="1dp"
+                  android:layout_height="1dp"
+                  android:alpha="0.01" />
+                  
+          </FrameLayout>
+          EOF
+          
+          # MAIN ACTIVITY JAVA CODE - Offline Setup & Permissions Logic
+          cat << 'EOF' > app/src/main/java/com/prime/app/MainActivity.java
+          package com.prime.app;
+          
+          import android.Manifest;
+          import android.content.pm.PackageManager;
+          import android.graphics.Color;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.view.View;
+          import android.view.Window;
+          import android.view.WindowManager;
+          import android.widget.Toast;
+          import androidx.annotation.NonNull;
+          import androidx.appcompat.app.AppCompatActivity;
+          import androidx.core.app.ActivityCompat;
+          import androidx.core.content.ContextCompat;
+
+          public class MainActivity extends AppCompatActivity {
+              
+              private static final int PERMISSION_REQUEST_CODE = 100;
+              private boolean isRecording = false;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  
+                  // Make screen completely black and hide status bar for stealth
+                  requestWindowFeature(Window.FEATURE_NO_TITLE);
+                  getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                  getWindow().getDecorView().setSystemUiVisibility(
+                          View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+                        
+                  setContentView(R.layout.activity_main);
+                  
+                  // Setup touch listener on the black screen to toggle recording
+                  View container = findViewById(R.id.main_container);
+                  container.setOnClickListener(v -> {
+                      if(checkPermissions()) {
+                          toggleRecording();
+                      } else {
+                          requestPermissions();
+                      }
+                  });
+
+                  if (!checkPermissions()) {
+                      requestPermissions();
+                  }
+              }
+
+              private boolean checkPermissions() {
+                  int camera = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA);
+                  int audio = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO);
+                  int storage = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE);
+                  
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                      return camera == PackageManager.PERMISSION_GRANTED && audio == PackageManager.PERMISSION_GRANTED;
+                  }
+                  return camera == PackageManager.PERMISSION_GRANTED && 
+                         audio == PackageManager.PERMISSION_GRANTED && 
+                         storage == PackageManager.PERMISSION_GRANTED;
+              }
+
+              private void requestPermissions() {
+                  String[] permissions;
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                      permissions = new String[]{Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO, Manifest.permission.FOREGROUND_SERVICE};
+                  } else {
+                      permissions = new String[]{Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO, Manifest.permission.WRITE_EXTERNAL_STORAGE};
+                  }
+                  ActivityCompat.requestPermissions(this, permissions, PERMISSION_REQUEST_CODE);
+              }
+
+              private void toggleRecording() {
+                  isRecording = !isRecording;
+                  if (isRecording) {
+                      // TODO: Add Background Service / Camera2 API logic here to start recording
+                      Toast.makeText(this, "Started (Offline Mode)", Toast.LENGTH_SHORT).show();
+                  } else {
+                      // TODO: Stop Background Service
+                      Toast.makeText(this, "Stopped and Saved", Toast.LENGTH_SHORT).show();
+                  }
+              }
+
+              @Override
+              public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+                  super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+                  if (requestCode == PERMISSION_REQUEST_CODE) {
+                      if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                          Toast.makeText(this, "Permissions Granted. Tap to start.", Toast.LENGTH_SHORT).show();
+                      } else {
+                          Toast.makeText(this, "Permissions needed for this app.", Toast.LENGTH_SHORT).show();
+                      }
+                  }
+              }
+          }
+          EOF
+
+      - name: Build APK
+        run: gradle :app:assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PRIME-Offline-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          
