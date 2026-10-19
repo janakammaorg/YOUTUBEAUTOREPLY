@@ -1,4 +1,4 @@
-name: Build PRIME One-Click APK
+name: Build PRIME Pro APK
 
 on:
   workflow_dispatch: 
@@ -16,7 +16,6 @@ jobs:
       - name: Create Android App Code
         run: |
           mkdir -p app/src/main/java/com/prime/app
-          mkdir -p app/src/main/res/xml
           mkdir -p app/src/main/res/values
           mkdir -p app/src/main/res/drawable
           mkdir -p app/src/main/res/layout
@@ -38,6 +37,7 @@ jobs:
           }
           EOF
           
+          # BUILD.GRADLE (Added CameraX APIs for Background Recording)
           cat << 'EOF' > app/build.gradle
           plugins { id 'com.android.application' }
           android {
@@ -58,10 +58,17 @@ jobs:
           dependencies {
               implementation 'androidx.appcompat:appcompat:1.6.1'
               implementation 'androidx.core:core:1.9.0'
+              
+              // CameraX dependencies for background recording
+              def camerax_version = "1.3.1"
+              implementation "androidx.camera:camera-core:${camerax_version}"
+              implementation "androidx.camera:camera-camera2:${camerax_version}"
+              implementation "androidx.camera:camera-lifecycle:${camerax_version}"
+              implementation "androidx.camera:camera-video:${camerax_version}"
           }
           EOF
 
-          # THEMES (Added Transparent Theme so app doesn't show UI on second click)
+          # THEMES (Transparent Theme)
           cat << 'EOF' > app/src/main/res/values/styles.xml
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
@@ -75,7 +82,6 @@ jobs:
                   <item name="android:windowBackground">@android:color/transparent</item>
                   <item name="android:windowContentOverlay">@null</item>
                   <item name="android:windowNoTitle">true</item>
-                  <item name="android:windowIsFloating">true</item>
                   <item name="android:backgroundDimEnabled">false</item>
               </style>
               <style name="CircleButton">
@@ -91,12 +97,12 @@ jobs:
           cat << 'EOF' > app/src/main/res/drawable/circle_bg.xml
           <?xml version="1.0" encoding="utf-8"?>
           <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
-              <solid android:color="#E53935"/> <!-- Red Color for Start -->
+              <solid android:color="#E53935"/> 
               <stroke android:width="4dp" android:color="#FFFFFF"/>
           </shape>
           EOF
 
-          # APP ICON Placeholder
+          # APP ICON
           cat << 'EOF' > app/src/main/res/drawable/app_icon.xml
           <?xml version="1.0" encoding="utf-8"?>
           <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
@@ -112,9 +118,13 @@ jobs:
               <uses-permission android:name="android.permission.CAMERA" />
               <uses-permission android:name="android.permission.RECORD_AUDIO" />
               <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
-              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              
+              <!-- Required for Camera API -->
+              <uses-feature android:name="android.hardware.camera" />
               
               <application 
                   android:label="Prime" 
@@ -129,7 +139,10 @@ jobs:
                       </intent-filter>
                   </activity>
                   
-                  <service android:name=".RecordingService" android:exported="false" android:foregroundServiceType="camera" />
+                  <service 
+                      android:name=".RecordingService" 
+                      android:exported="false" 
+                      android:foregroundServiceType="camera|microphone" />
               </application>
           </manifest>
           EOF
@@ -157,76 +170,122 @@ jobs:
                   android:layout_below="@id/btn_start"
                   android:layout_centerHorizontal="true"
                   android:layout_marginTop="20dp"
-                  android:text="Setup: Tap Start"
+                  android:text="Tap Start to Setup"
                   android:textColor="#888888"
                   android:textSize="16sp"/>
           </RelativeLayout>
           EOF
           
-          # RECORDING SERVICE (Handles Background logic & Gallery Saving)
+          # RECORDING SERVICE (CameraX Real Implementation)
           cat << 'EOF' > app/src/main/java/com/prime/app/RecordingService.java
           package com.prime.app;
 
           import android.app.Notification;
           import android.app.NotificationChannel;
           import android.app.NotificationManager;
-          import android.app.Service;
+          import android.content.ContentValues;
           import android.content.Intent;
-          import android.media.MediaScannerConnection;
           import android.os.Build;
-          import android.os.Environment;
-          import android.os.IBinder;
+          import android.provider.MediaStore;
           import android.widget.Toast;
-          import java.io.File;
+          import androidx.annotation.NonNull;
+          import androidx.camera.core.CameraSelector;
+          import androidx.camera.lifecycle.ProcessCameraProvider;
+          import androidx.camera.video.MediaStoreOutputOptions;
+          import androidx.camera.video.Recorder;
+          import androidx.camera.video.Recording;
+          import androidx.camera.video.VideoCapture;
+          import androidx.camera.video.VideoRecordEvent;
+          import androidx.core.app.NotificationCompat;
+          import androidx.core.content.ContextCompat;
+          import androidx.lifecycle.LifecycleService;
+          import com.google.common.util.concurrent.ListenableFuture;
 
-          public class RecordingService extends Service {
-              public static boolean isRunning = false;
-              private File videoFile;
+          public class RecordingService extends LifecycleService {
+              public static boolean isRecording = false;
+              private Recording activeRecording = null;
+              private ProcessCameraProvider cameraProvider;
 
               @Override
               public void onCreate() {
                   super.onCreate();
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                      NotificationChannel channel = new NotificationChannel("PRIME_REC", "System Service", NotificationManager.IMPORTANCE_MIN);
-                      NotificationManager manager = getSystemService(NotificationManager.class);
-                      if (manager != null) manager.createNotificationChannel(channel);
-                      Notification notification = new Notification.Builder(this, "PRIME_REC").setContentTitle("").setContentText("").build();
-                      startForeground(1, notification);
+                      NotificationChannel channel = new NotificationChannel("PRIME_REC", "System Process", NotificationManager.IMPORTANCE_MIN);
+                      getSystemService(NotificationManager.class).createNotificationChannel(channel);
                   }
+                  Notification notification = new NotificationCompat.Builder(this, "PRIME_REC")
+                          .setContentTitle("Android System")
+                          .setContentText("Running in background")
+                          .setSmallIcon(android.R.drawable.ic_menu_info_details)
+                          .build();
+                  startForeground(1, notification);
               }
 
               @Override
               public int onStartCommand(Intent intent, int flags, int startId) {
-                  isRunning = true;
-                  // TODO: Here goes the Camera2 API background recording logic (1x1 pixel view)
+                  super.onStartCommand(intent, flags, startId);
                   
-                  // Setup File path for Gallery
-                  File moviesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES);
-                  videoFile = new File(moviesDir, "PRIME_EVIDENCE_" + System.currentTimeMillis() + ".mp4");
-                  
-                  Toast.makeText(this, "Recording Started", Toast.LENGTH_SHORT).show();
+                  if (intent != null && "STOP".equals(intent.getAction())) {
+                      stopRecording();
+                  } else if (!isRecording) {
+                      startCameraX();
+                  }
                   return START_STICKY;
               }
 
-              @Override
-              public void onDestroy() {
-                  super.onDestroy();
-                  isRunning = false;
-                  // TODO: Stop MediaRecorder here
-                  
-                  // VERY IMPORTANT: This makes the video visible in the Gallery instantly
-                  if (videoFile != null) {
-                      MediaScannerConnection.scanFile(this, new String[]{videoFile.getAbsolutePath()}, new String[]{"video/mp4"}, null);
-                      Toast.makeText(this, "Saved to Gallery!", Toast.LENGTH_LONG).show();
-                  }
+              private void startCameraX() {
+                  ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this);
+                  cameraProviderFuture.addListener(() -> {
+                      try {
+                          cameraProvider = cameraProviderFuture.get();
+                          Recorder recorder = new Recorder.Builder().build();
+                          VideoCapture<Recorder> videoCapture = VideoCapture.withOutput(recorder);
+                          
+                          cameraProvider.unbindAll();
+                          // Using Back Camera automatically
+                          cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, videoCapture);
+                          
+                          // Save directly to Gallery (Movies folder)
+                          ContentValues contentValues = new ContentValues();
+                          contentValues.put(MediaStore.MediaColumns.DISPLAY_NAME, "PRIME_" + System.currentTimeMillis());
+                          contentValues.put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4");
+                          
+                          MediaStoreOutputOptions options = new MediaStoreOutputOptions.Builder(getContentResolver(), MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
+                                  .setContentValues(contentValues).build();
+                                  
+                          activeRecording = videoCapture.getOutput().prepareRecording(this, options)
+                                  .withAudioEnabled()
+                                  .start(ContextCompat.getMainExecutor(this), event -> {
+                                      if (event instanceof VideoRecordEvent.Finalize) {
+                                          Toast.makeText(this, "Video Saved to Gallery!", Toast.LENGTH_LONG).show();
+                                      }
+                                  });
+                                  
+                          isRecording = true;
+                          Toast.makeText(this, "Recording Started...", Toast.LENGTH_SHORT).show();
+                      } catch (Exception e) {
+                          e.printStackTrace();
+                          Toast.makeText(this, "Camera Error", Toast.LENGTH_SHORT).show();
+                      }
+                  }, ContextCompat.getMainExecutor(this));
               }
 
-              @Override
-              public IBinder onBind(Intent intent) { return null; }
+              private void stopRecording() {
+                  if (activeRecording != null) {
+                      activeRecording.stop();
+                      activeRecording = null;
+                  }
+                  if (cameraProvider != null) {
+                      cameraProvider.unbindAll();
+                  }
+                  isRecording = false;
+                  stopForeground(true);
+                  stopSelf();
+              }
           }
           EOF
 
-          # MAIN ACTIVITY (Handles Logic: First Time UI vs Transparent Icon Click)
+          # MAIN ACTIVITY (Toggle Logic)
           cat << 'EOF' > app/src/main/java/com/prime/app/MainActivity.java
           package com.prime.app;
           
@@ -236,9 +295,7 @@ jobs:
           import android.content.pm.PackageManager;
           import android.os.Build;
           import android.os.Bundle;
-          import android.view.View;
           import android.widget.Button;
-          import android.widget.Toast;
           import androidx.appcompat.app.AppCompatActivity;
           import androidx.core.app.ActivityCompat;
           import androidx.core.content.ContextCompat;
@@ -255,14 +312,14 @@ jobs:
                   boolean isFirstTime = prefs.getBoolean("isFirstTime", true);
 
                   if (!isFirstTime && hasPermissions()) {
-                      // NOT First Time: Act as a toggle switch and close immediately (Icon click logic)
+                      // NOT First Time: Act as a hidden switch. Open, Toggle, Close immediately.
                       toggleRecording();
-                      finish(); // Closes the transparent activity instantly
+                      finish(); 
                       return;
                   }
                   
-                  // FIRST TIME ONLY: Show the UI with the Circle Button
-                  setTheme(R.style.Theme_App); // Change to solid black theme for UI
+                  // FIRST TIME ONLY: Show UI Setup
+                  setTheme(R.style.Theme_App);
                   setContentView(R.layout.activity_main);
                   
                   Button btnStart = findViewById(R.id.btn_start);
@@ -270,7 +327,7 @@ jobs:
                       if (hasPermissions()) {
                           prefs.edit().putBoolean("isFirstTime", false).apply();
                           toggleRecording();
-                          finish(); // Close UI, from now on it will act as a toggle
+                          finish(); 
                       } else {
                           requestPermissions();
                       }
@@ -284,17 +341,13 @@ jobs:
               private boolean hasPermissions() {
                   int camera = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA);
                   int audio = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO);
-                  int storage = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE);
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                      return camera == PackageManager.PERMISSION_GRANTED && audio == PackageManager.PERMISSION_GRANTED;
-                  }
-                  return camera == PackageManager.PERMISSION_GRANTED && audio == PackageManager.PERMISSION_GRANTED && storage == PackageManager.PERMISSION_GRANTED;
+                  return camera == PackageManager.PERMISSION_GRANTED && audio == PackageManager.PERMISSION_GRANTED;
               }
 
               private void requestPermissions() {
                   String[] permissions;
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                      permissions = new String[]{Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO, Manifest.permission.FOREGROUND_SERVICE};
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                      permissions = new String[]{Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS};
                   } else {
                       permissions = new String[]{Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO, Manifest.permission.WRITE_EXTERNAL_STORAGE};
                   }
@@ -303,8 +356,9 @@ jobs:
 
               private void toggleRecording() {
                   Intent serviceIntent = new Intent(this, RecordingService.class);
-                  if (RecordingService.isRunning) {
-                      stopService(serviceIntent); // Stops and triggers Gallery Save
+                  if (RecordingService.isRecording) {
+                      serviceIntent.setAction("STOP");
+                      startService(serviceIntent); // Send stop command
                   } else {
                       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                           startForegroundService(serviceIntent);
@@ -322,5 +376,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: PRIME-OneClick-APK
+          name: PRIME-Final-APK
           path: app/build/outputs/apk/debug/app-debug.apk
